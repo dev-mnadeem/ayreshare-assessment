@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-`docs/task.md` is the assessment brief and the source of truth for scope. Everything below "Technical decisions" is agreed with the user. The toolchain is scaffolded (M1); the source layout under "Planned architecture" is built out milestone by milestone. Update this file when reality diverges.
+Feature-complete (M0–M8, M10). `docs/task.md` is the assessment brief and the source of truth for scope (git-ignored, local only). Deliverables: the endpoint, `docs/tiktok-boost.md` (developer docs), `docs/safety.md` (safety design for the discussion), `README.md`. **M9 (TikTok sandbox verification) was skipped by the user** — nothing has been run against real TikTok; every ⚠️ / `UNVERIFIED (M0)` value is listed in `docs/tiktok-boost.md` → "Verification before launch". Keep these docs in sync when behaviour changes.
 
 **Progress tracking:** `.claude/milestones.md` holds the ordered milestones (M0–M10) and their checklists. Read it at the start of every session to find the current milestone, and update it (checkboxes, status column, notes) as work completes.
 
@@ -298,6 +298,7 @@ tests/
 docs/
   task.md                 assessment brief (git-ignored, local only)
   tiktok-boost.md         developer docs for the endpoint (deliverable)
+  safety.md               risks → mitigations → verification; residual risks (deliverable)
 ```
 
 Auth is simulated but behaves like Ayrshare's: accounts (primary API key) own User Profiles; `Authorization: Bearer <key>` resolves the account, optional `Profile-Key` selects a profile, otherwise the primary profile is used. All `/api` routes sit behind `authenticate`, so a request without a valid key gets 401 even for unknown routes; `/health` is public. API/profile keys are stored only as SHA-256 hashes. The linked TikTok ads account (advertiser ID + access token) lives on the profile; the 601 "not linked" check is per endpoint (`requireTikTokAdsLink`), not in the auth middleware. Demo keys are in `src/db/seed.ts` (`DEMO`), e.g. `Authorization: Bearer demo-api-key-active`, `Profile-Key: demo-profile-key-creator`.

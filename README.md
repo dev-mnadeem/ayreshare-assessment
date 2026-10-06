@@ -90,3 +90,17 @@ The boost flow (validate → spend caps → read-only checks → create disabled
 - Developed against a **mocked** TikTok Marketing API. The Spark authorization endpoints aren't available in TikTok's Marketing API sandbox, and the sandbox wasn't exercised for this submission. TikTok values not confirmed against the live API are listed under [Verification before launch](docs/tiktok-boost.md#verification-before-launch).
 - Authentication is simulated (seeded accounts and profiles) but behaves like Ayrshare's.
 - Out of scope: UI; updating, pausing or deleting ads after creation; non-Spark ads.
+
+## Verified native example
+
+![Native API workflow](docs/screenshots/native-api.png)
+
+The native run uses a disposable SQLite database and mock TikTok integration. It checks authorization rejection, dry-run planning, and idempotent boost replay. No real advertisement or spending was created.
+[Captured responses](docs/native-api.json) use disposable fixture data.
+
+The local suite, TypeScript build, and production dependency audit were rerun
+on Node 22. Docker execution remains unverified in this environment.
+
+## Author
+
+[**Muhammad Nadeem**](https://github.com/dev-mnadeem)

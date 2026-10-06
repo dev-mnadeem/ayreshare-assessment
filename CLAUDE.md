@@ -178,6 +178,18 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 | Money            | Accept USD decimals in the API; validate ≤ 2 decimals; handle internally as integer cents; convert only at the TikTok boundary                                                                                                         | Avoid floating-point money bugs.                                                                                                     |
 | Time             | Accept ISO 8601 with offset; store UTC; convert to TikTok's format/timezone only in the mapper                                                                                                                                         |                                                                                                                                      |
 
+## Request contract (M4)
+
+`validateBoostRequest` is the single entry point; it throws `ValidationError` (101) and runs before anything that touches TikTok. Rules worth knowing before changing it:
+
+- Field names follow Facebook boost: `adName`, `budget`, `goal` (default `engagement`), `status` (default `active`), `startDate` (default now), `endDate` (**required**), `minAge`/`maxAge` (18/65), `gender` (`all`), `locations` (`{ countries, locationIds }`, default `{ countries: ["US"] }`), `interests`, `callToAction` (traffic only, and required for traffic). Additions: `budgetType` (`daily` default | `total`), `bidAmount` (optional), `dryRun`, and exactly one of `postId` / `tiktokPostId` / `authCode`.
+- **Strict:** unknown fields are rejected (catches typos like `budgt`). Enums are case-insensitive and trimmed; CTA types are uppercase (as on Facebook), other enums lowercase.
+- **Two phases:** field-level Zod checks first, then cross-field rules (schedule, budget minimums, age order, CTA/goal) only when every field passed. The post-identifier check runs on the raw body so it's reported alongside field errors. All issues within a phase go into one `details` string.
+- Dates must be ISO 8601 **with a timezone**; `startDate` may be ≤ 5 min in the past (clock skew); schedule ≥ 24 h (our rule, keeps day-based budget math meaningful) and ≤ `MAX_CAMPAIGN_DAYS`.
+- Budget minimums: daily ≥ $20.00; total ≥ $20.00 × billing days (`ceil(duration / 24h)`). `maxSpendCents` = daily × days, or the total.
+- Numeric IDs (`tiktokPostId`, `locationIds`, `interests`) are strings; safe integers are accepted and stringified, while numbers beyond `Number.MAX_SAFE_INTEGER` (e.g. an unquoted 19-digit TikTok ID, already rounded by JSON parsing) get a "send it as a string" error.
+- Spend caps (604) are **not** schema rules — they're a safety check in M7.
+
 ## Safety features (design requirements)
 
 These are the answer to requirement 2 — implement and document all of them:
@@ -203,6 +215,7 @@ src/
   logger.ts               pino factory + REDACT_PATHS (secrets never logged)
   config/env.ts           Zod-validated env → typed Config (money limits in cents); fail fast
   lib/money.ts            USD ↔ integer cents, 2-decimal check (float-safe)
+  lib/validation.ts       Zod issues → FieldIssue[] → one `details` string ("Missing required fields: …. Invalid fields: …")
   types/express.d.ts      Request augmentation: req.id, req.log
   middleware/
     request-context.ts    X-Request-Id (validated inbound or UUID), child logger, access log line
@@ -213,7 +226,8 @@ src/
     codes.ts              ERROR_CODES registry (code, httpStatus, action, message)
     app-error.ts          AppError (+ ValidationError, AuthenticationError, NotFoundError) → toEnvelope()
   modules/tiktok-boost/   (M4–M8)
-    schema.ts             Zod request/response schemas (types inferred from here)
+    constants.ts          public API vocabulary (goals, enums, age edges, CTA types, minimums)
+    schema.ts             validateBoostRequest(body, { now, maxCampaignDays }) → normalised BoostRequest (cents, Dates, PostReference, maxSpendCents)
     controller.ts         HTTP ↔ service translation only
     service.ts            orchestration: pre-flight → create (disabled) → enable → persist; rollback
     mapper.ts             Ayrshare request ↔ TikTok payloads (enums, money, time, targeting)

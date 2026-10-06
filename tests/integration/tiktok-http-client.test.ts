@@ -16,7 +16,9 @@ import { boostRequest } from '../helpers/boost-request.js';
 const HOST = 'https://sandbox-ads.tiktok.com';
 const BASE = '/open_api/v1.3';
 
-function makeClient(overrides: { timeoutMs?: number; maxRetries?: number } = {}) {
+function makeClient(
+  overrides: { timeoutMs?: number; maxRetries?: number; fetch?: typeof fetch } = {},
+) {
   const sleeps: number[] = [];
   const client = new HttpTikTokClient({
     baseUrl: `${HOST}${BASE}`,
@@ -28,6 +30,7 @@ function makeClient(overrides: { timeoutMs?: number; maxRetries?: number } = {})
       sleeps.push(ms);
       return Promise.resolve();
     },
+    ...(overrides.fetch && { fetch: overrides.fetch }),
   });
   return { client, sleeps };
 }
@@ -187,14 +190,19 @@ describe('HttpTikTokClient — errors', () => {
   });
 
   it('times out slow responses', async () => {
-    nock(HOST)
-      .get(`${BASE}/advertiser/info/`)
-      .query(true)
-      .delay(3_000)
-      .reply(200, ok({ list: [] }));
+    // A fetch that only settles when its signal aborts. nock 15's delay() can't stand in here:
+    // its socket interceptor completes the response after undici has aborted the request.
+    const hangingFetch: typeof fetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(init.signal?.reason as Error);
+        });
+      });
 
     const err = await caught(
-      makeClient({ timeoutMs: 1_000, maxRetries: 0 }).client.getAdvertiser(ctx),
+      makeClient({ timeoutMs: 1_000, maxRetries: 0, fetch: hangingFetch }).client.getAdvertiser(
+        ctx,
+      ),
     );
 
     expect(err.kind).toBe('timeout');

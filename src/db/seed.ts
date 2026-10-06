@@ -1,28 +1,9 @@
+import { DEMO } from '../demo/fixtures.js';
 import { hashSecret } from '../lib/secrets.js';
 
 import type { Db } from './database.js';
 
-/**
- * Demo fixtures covering every auth outcome. These keys are for local development and tests
- * only; they are documented in the README so the endpoint can be exercised with curl.
- */
-export const DEMO = {
-  apiKey: 'demo-api-key-active',
-  suspendedApiKey: 'demo-api-key-suspended',
-  otherAccountApiKey: 'demo-api-key-other',
-  profileKeys: {
-    creator: 'demo-profile-key-creator',
-    noTikTok: 'demo-profile-key-no-tiktok',
-    suspended: 'demo-profile-key-suspended',
-    otherAccount: 'demo-profile-key-other-account',
-  },
-  /** Mock-mode advertiser IDs; the mock TikTok client recognises these. */
-  advertiserIds: {
-    primary: '7100000000000000001',
-    creator: '7100000000000000002',
-    other: '7100000000000000003',
-  },
-} as const;
+export { DEMO };
 
 interface SeedAccount {
   id: string;
@@ -54,9 +35,9 @@ const PROFILES: SeedProfile[] = [
     profileKey: null,
     status: 'active',
     tiktok: {
-      advertiserId: DEMO.advertiserIds.primary,
-      accessToken: 'mock-access-token-primary',
-      username: 'democo',
+      advertiserId: DEMO.advertisers.primary.advertiserId,
+      accessToken: DEMO.advertisers.primary.accessToken,
+      username: DEMO.advertisers.primary.username,
     },
   },
   {
@@ -66,9 +47,9 @@ const PROFILES: SeedProfile[] = [
     profileKey: DEMO.profileKeys.creator,
     status: 'active',
     tiktok: {
-      advertiserId: DEMO.advertiserIds.creator,
-      accessToken: 'mock-access-token-creator',
-      username: 'creatorstudio',
+      advertiserId: DEMO.advertisers.creator.advertiserId,
+      accessToken: DEMO.advertisers.creator.accessToken,
+      username: DEMO.advertisers.creator.username,
     },
   },
   {
@@ -110,9 +91,9 @@ const PROFILES: SeedProfile[] = [
     profileKey: DEMO.profileKeys.otherAccount,
     status: 'active',
     tiktok: {
-      advertiserId: DEMO.advertiserIds.other,
-      accessToken: 'mock-access-token-other',
-      username: 'otherbrand',
+      advertiserId: DEMO.advertisers.other.advertiserId,
+      accessToken: DEMO.advertisers.other.accessToken,
+      username: DEMO.advertisers.other.username,
     },
   },
 ];

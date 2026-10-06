@@ -22,6 +22,9 @@ const envSchema = z
     DATABASE_PATH: z.string().min(1).default('./data/ayrshare.db'),
     TIKTOK_MODE: z.enum(['mock', 'sandbox', 'live']).default('mock'),
     TIKTOK_BASE_URL: z.url().default(`https://${TIKTOK_HOSTS.sandbox}/open_api/v1.3`),
+    /** Outbound request rate; the Marketing API sandbox allows 1 QPS. */
+    TIKTOK_MAX_QPS: z.coerce.number().positive().max(50).default(1),
+    TIKTOK_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
     MAX_BUDGET_PER_REQUEST: usdAmount.default(5_000),
     MAX_SPEND_PER_PROFILE: usdAmount.default(20_000),
     MAX_CAMPAIGN_DAYS: z.coerce.number().int().min(1).max(365).default(90),
@@ -53,6 +56,8 @@ export interface Config {
   readonly tiktok: {
     readonly mode: TikTokMode;
     readonly baseUrl: string;
+    readonly maxQps: number;
+    readonly timeoutMs: number;
   };
   readonly limits: {
     /** Money is held as integer cents everywhere inside the app. */
@@ -84,7 +89,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
     port: env.PORT,
     logLevel: env.LOG_LEVEL,
     databasePath: env.DATABASE_PATH,
-    tiktok: { mode: env.TIKTOK_MODE, baseUrl: env.TIKTOK_BASE_URL },
+    tiktok: {
+      mode: env.TIKTOK_MODE,
+      baseUrl: env.TIKTOK_BASE_URL,
+      maxQps: env.TIKTOK_MAX_QPS,
+      timeoutMs: env.TIKTOK_TIMEOUT_MS,
+    },
     limits: {
       maxBudgetPerRequestCents: usdToCents(env.MAX_BUDGET_PER_REQUEST),
       maxSpendPerProfileCents: usdToCents(env.MAX_SPEND_PER_PROFILE),

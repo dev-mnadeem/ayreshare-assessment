@@ -37,7 +37,7 @@ describe('SqliteAuthRepository', () => {
       isPrimary: true,
       status: 'active',
       tiktokAds: {
-        advertiserId: DEMO.advertiserIds.primary,
+        advertiserId: DEMO.advertisers.primary.advertiserId,
         accessToken: 'mock-access-token-primary',
         username: 'democo',
       },
@@ -70,7 +70,7 @@ describe('requireTikTokAdsLink', () => {
     const profile = repo.findProfileByKey('acc_demo', DEMO.profileKeys.creator);
     if (!profile) throw new Error('fixture missing');
 
-    expect(requireTikTokAdsLink(profile).advertiserId).toBe(DEMO.advertiserIds.creator);
+    expect(requireTikTokAdsLink(profile).advertiserId).toBe(DEMO.advertisers.creator.advertiserId);
   });
 
   it('throws a 601 naming the profile when absent', () => {

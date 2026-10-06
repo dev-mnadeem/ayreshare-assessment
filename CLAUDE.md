@@ -190,6 +190,15 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 - Numeric IDs (`tiktokPostId`, `locationIds`, `interests`) are strings; safe integers are accepted and stringified, while numbers beyond `Number.MAX_SAFE_INTEGER` (e.g. an unquoted 19-digit TikTok ID, already rounded by JSON parsing) get a "send it as a string" error.
 - Spend caps (604) are **not** schema rules — they're a safety check in M7.
 
+## TikTok client contract (M5)
+
+- **Never import TikTok wire names outside `integrations/tiktok/`.** The service talks to `TikTokAdsClient` with camelCase domain types; payloads come from `mapper.ts`.
+- Every call takes a `TikTokCallContext { advertiserId, accessToken, onCall? }`; `onCall` receives one `TikTokCallRecord` per attempt (endpoint, TikTok `request_id`, code, outcome) — the audit trail hook for M7.
+- Failures are always `TikTokError`. Use `translateTikTokError(err, step)` at the service boundary; the `step` decides the Ayrshare code for TikTok rejections (Spark steps → 602, identity/video → 603, advertiser → 601, creates → 605); rate limits → 606, server/timeout/network/malformed → 607, auth → 601.
+- **Retry policy (HTTP client):** rate-limited calls retry for any method (TikTok rejected them before processing); other transient failures retry only for GETs; max 2 retries, backoff 1s/2s. Writes that fail with server/timeout/network/malformed are `ambiguous` and are **never** retried — the service must reconcile with `findIdByName` (object names embed the boost ID) and/or rely on the deterministic `request_id`.
+- Mock (`TIKTOK_MODE=mock`, and all tests): validates tokens, post ownership, Spark codes (`DEMO.sparkCodes`), daily budget ≥ $20, parent ownership; `failNext(method, { kind: 'api' | 'rate_limit' | 'server' | 'timeout', afterSend? })` injects failures — `timeout` + `afterSend` performs the write and then fails (the ambiguous case).
+- Response `data` schemas are lenient (unknown keys ignored) and mostly UNVERIFIED; a shape mismatch surfaces as `malformed_response` naming the missing path.
+
 ## Safety features (design requirements)
 
 These are the answer to requirement 2 — implement and document all of them:
@@ -232,11 +241,18 @@ src/
     service.ts            orchestration: pre-flight → create (disabled) → enable → persist; rollback
     mapper.ts             Ayrshare request ↔ TikTok payloads (enums, money, time, targeting)
     repository.ts         SQLite access for boosts / idempotency / audit
-  integrations/tiktok/    (M5)
-    client.ts             TikTokAdsClient interface + shared types
-    constants.ts          every TikTok enum/limit (⚠️ unverified ones tagged)
-    http-client.ts        real/sandbox implementation (throttle, code≠0 → typed error)
-    mock-client.ts        in-process mock with injectable failures
+  integrations/tiktok/
+    client.ts             TikTokAdsClient interface (pre-flight reads, Spark code, create, status, findIdByName)
+    types.ts              TikTokCallContext (+ onCall trace hook), domain results, snake_case wire payloads
+    constants.ts          every TikTok enum/limit/endpoint/response code (`UNVERIFIED (M0)` tags)
+    mapper.ts             pure BoostRequest → campaign/ad group/ad payloads (all DISABLE), dates, ages, locations
+    errors.ts             TikTokError { kind, code, requestId, transient, ambiguous } + kindForCode
+    translate.ts          translateTikTokError(err, step) → AppError (601/602/603/605/606/607)
+    rate-limiter.ts       RateLimiter: spaces call starts (TIKTOK_MAX_QPS)
+    http-client.ts        fetch-based client: Access-Token, Zod-validated envelope/data, safe retries
+    mock-client.ts        in-memory TikTok (DEMO fixtures), failNext() injection, request_id dedupe
+    factory.ts            createTikTokClient(config, logger) by TIKTOK_MODE
+  demo/fixtures.ts        DEMO keys, advertisers, tokens, video IDs, Spark codes — shared by seed + mock
   modules/auth/
     types.ts              Account, Profile, TikTokAdsLink, AuthContext
     auth-repository.ts    AuthRepository interface + SqliteAuthRepository (lookups by key hash)

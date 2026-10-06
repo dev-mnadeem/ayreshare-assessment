@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.env
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+*.log
+
+# Local-only: assessment brief and Claude Code workspace
+docs/task.md
+.claude/

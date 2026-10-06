@@ -3,9 +3,13 @@ import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { AppError, NotFoundError, ValidationError } from '../errors/app-error.js';
 import { ERROR_CODES } from '../errors/codes.js';
 
-/** Shape of the errors thrown by express.json() (body-parser). */
+/**
+ * Shape of the errors thrown by express.json() (body-parser, via http-errors). Most carry a
+ * `type`; failures while decoding a compressed body (e.g. bad gzip) carry only a 4xx `status`.
+ */
 interface BodyParserError {
-  type: string;
+  type?: string;
+  status: number;
   message: string;
 }
 
@@ -13,15 +17,18 @@ function isBodyParserError(err: unknown): err is BodyParserError {
   return (
     typeof err === 'object' &&
     err !== null &&
-    'type' in err &&
-    typeof err.type === 'string' &&
-    'message' in err
+    'status' in err &&
+    typeof err.status === 'number' &&
+    err.status >= 400 &&
+    err.status < 500 &&
+    'message' in err &&
+    typeof err.message === 'string'
   );
 }
 
 /** Body-parser failures happen before any handler runs; translate them into code 101. */
-function fromBodyParser(err: BodyParserError): AppError | undefined {
-  switch (err.type) {
+function fromBodyParser(err: BodyParserError): AppError {
+  switch (err.type ?? '') {
     case 'entity.parse.failed':
       return new ValidationError(
         `Request body is not valid JSON (${err.message}). Send a JSON object with Content-Type: application/json.`,
@@ -32,7 +39,9 @@ function fromBodyParser(err: BodyParserError): AppError | undefined {
     case 'charset.unsupported':
       return new ValidationError('Unsupported request body encoding. Send UTF-8 encoded JSON.');
     default:
-      return undefined;
+      return new ValidationError(
+        `Request body could not be read (${err.message}). Send UTF-8 JSON, uncompressed or with a valid gzip/deflate/br Content-Encoding.`,
+      );
   }
 }
 

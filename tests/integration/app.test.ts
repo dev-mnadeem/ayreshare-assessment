@@ -129,6 +129,29 @@ describe('error envelope', () => {
     expect((res.body as { details: string }).details).toMatch(/too large/);
   });
 
+  it('turns an undecodable gzip body into a 101, not a 500', async () => {
+    const res = await request(app)
+      .post('/echo')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'gzip')
+      .send('this is not gzip data');
+
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: 101, action: 'request' });
+    expect((res.body as { details: string }).details).toMatch(/could not be read/);
+  });
+
+  it('turns an unsupported Content-Encoding into a 101', async () => {
+    const res = await request(app)
+      .post('/echo')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'compress')
+      .send('{}');
+
+    expect(res.status).toBe(400);
+    expect((res.body as { details: string }).details).toMatch(/Unsupported request body encoding/);
+  });
+
   it('returns a 404 envelope for unknown routes', async () => {
     const res = await request(app).post('/api/ads/tiktok/nope');
 

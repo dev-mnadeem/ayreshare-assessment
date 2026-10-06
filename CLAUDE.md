@@ -138,7 +138,7 @@ Spark-supported objectives (auction) ✅: Reach, Traffic, Video Views, Community
 
 ### Ayrshare error codes for this endpoint
 
-Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost). New codes use a **6xx block** so they can't collide; in a real codebase they'd be assigned from Ayrshare's internal registry.
+Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost). New codes use a **6xx block** so they can't collide; in a real codebase they'd be assigned from Ayrshare's internal registry. Source of truth: `src/errors/codes.ts` (the `message` strings, including 102's, are our wording — Ayrshare's exact texts aren't published).
 
 | Code | HTTP | `action`     | When                                                                                                   |
 | ---- | ---- | ------------ | ------------------------------------------------------------------------------------------------------ |
@@ -154,6 +154,8 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 | 608  | 409  | `request`    | `Idempotency-Key` reused with a different body                                                         |
 | 609  | 409  | `request`    | Request with the same `Idempotency-Key` still in progress                                              |
 | 610  | 500  | `boost post` | Boost failed and cleanup was incomplete — orphaned TikTok object IDs listed in `details`               |
+| 611  | 404  | `request`    | Unknown route                                                                                          |
+| 612  | 500  | `request`    | Unexpected internal error — generic message, `details` carries the request ID, nothing internal leaks  |
 
 ## Technical decisions
 
@@ -188,33 +190,43 @@ These are the answer to requirement 2 — implement and document all of them:
 8. **Audit and traceability.** Persist every boost attempt with the Ayrshare boost ID, profile, inputs, TikTok object IDs, and TikTok `request_id`s. Embed the boost ID in TikTok object names so they can be found in Ads Manager.
 9. **Secret hygiene.** Never log access tokens, auth codes, or API keys (pino `redact`); mask them in stored audit rows.
 
-## Planned architecture
+## Architecture
 
 Layered; dependencies point inward. Routes don't contain logic, services don't know about Express, only `integrations/tiktok` knows TikTok's wire format.
 
 ```
 src/
-  app.ts                  createApp(deps) factory — no listen(); tests import this
-  server.ts               reads config, builds deps, calls listen()
-  config/                 Zod-validated env
-  middleware/             requestId, auth (Bearer + Profile-Key), idempotency, errorHandler
-  errors/                 AppError hierarchy + code registry → Ayrshare envelope
-  modules/tiktok-boost/
+  app.ts                  createApp(deps) + installCoreMiddleware / installErrorHandling — no listen()
+  server.ts               loads .env, config, logger; listen(); graceful SIGTERM/SIGINT shutdown
+  logger.ts               pino factory + REDACT_PATHS (secrets never logged)
+  config/env.ts           Zod-validated env → typed Config (money limits in cents); fail fast
+  lib/money.ts            USD ↔ integer cents, 2-decimal check (float-safe)
+  types/express.d.ts      Request augmentation: req.id, req.log
+  middleware/
+    request-context.ts    X-Request-Id (validated inbound or UUID), child logger, access log line
+    error-handler.ts      404 + error → Ayrshare envelope; body-parser errors → 101
+    (M3/M7: auth, idempotency)
+  errors/
+    codes.ts              ERROR_CODES registry (code, httpStatus, action, message)
+    app-error.ts          AppError (+ ValidationError, AuthenticationError, NotFoundError) → toEnvelope()
+  modules/tiktok-boost/   (M4–M8)
     schema.ts             Zod request/response schemas (types inferred from here)
     controller.ts         HTTP ↔ service translation only
     service.ts            orchestration: pre-flight → create (disabled) → enable → persist; rollback
     mapper.ts             Ayrshare request ↔ TikTok payloads (enums, money, time, targeting)
     repository.ts         SQLite access for boosts / idempotency / audit
-  integrations/tiktok/
+  integrations/tiktok/    (M5)
     client.ts             TikTokAdsClient interface + shared types
+    constants.ts          every TikTok enum/limit (⚠️ unverified ones tagged)
     http-client.ts        real/sandbox implementation (throttle, code≠0 → typed error)
     mock-client.ts        in-process mock with injectable failures
-  db/                     schema/migrations, connection
+  db/                     (M3) schema/migrations, connection
 tests/
-  unit/                   schema, mapper, service (with mock client)
-  integration/            Supertest against createApp() with :memory: SQLite + mock client
+  helpers/test-app.ts     testDeps() (silent logger, :memory:) and harnessApp() — real middleware + test-defined routes, so error paths are tested without test-only routes in src
+  unit/                   pure modules: config, money, logger, schema, mapper, service (mock client)
+  integration/            Supertest against createApp() / harnessApp()
 docs/
-  task.md                 assessment brief
+  task.md                 assessment brief (git-ignored, local only)
   tiktok-boost.md         developer docs for the endpoint (deliverable)
 ```
 

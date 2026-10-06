@@ -156,6 +156,8 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 | 610  | 500  | `boost post` | Boost failed and cleanup was incomplete — orphaned TikTok object IDs listed in `details`               |
 | 611  | 404  | `request`    | Unknown route                                                                                          |
 | 612  | 500  | `request`    | Unexpected internal error — generic message, `details` carries the request ID, nothing internal leaks  |
+| 613  | 403  | `request`    | `Profile-Key` unknown or belongs to another account (same answer for both — no enumeration)            |
+| 614  | 403  | `request`    | Account or User Profile suspended                                                                      |
 
 ## Technical decisions
 
@@ -205,7 +207,8 @@ src/
   middleware/
     request-context.ts    X-Request-Id (validated inbound or UUID), child logger, access log line
     error-handler.ts      404 + error → Ayrshare envelope; body-parser errors → 101
-    (M3/M7: auth, idempotency)
+    authenticate.ts       Bearer API key → account; Profile-Key → profile (else primary); req.auth / getAuth(req)
+    (M7: idempotency)
   errors/
     codes.ts              ERROR_CODES registry (code, httpStatus, action, message)
     app-error.ts          AppError (+ ValidationError, AuthenticationError, NotFoundError) → toEnvelope()
@@ -220,7 +223,16 @@ src/
     constants.ts          every TikTok enum/limit (⚠️ unverified ones tagged)
     http-client.ts        real/sandbox implementation (throttle, code≠0 → typed error)
     mock-client.ts        in-process mock with injectable failures
-  db/                     (M3) schema/migrations, connection
+  modules/auth/
+    types.ts              Account, Profile, TikTokAdsLink, AuthContext
+    auth-repository.ts    AuthRepository interface + SqliteAuthRepository (lookups by key hash)
+    tiktok-ads-link.ts    requireTikTokAdsLink(profile) → 601 if no linked ads account
+  db/
+    database.ts           openDatabase(path) (WAL, foreign_keys, busy_timeout) + runMigrations
+    migrations.ts         append-only MIGRATIONS list; each runs once in a transaction
+    seed.ts               DEMO keys/IDs + idempotent seedDemoData(db)
+  scripts/seed.ts         `npm run seed` CLI
+  lib/secrets.ts          hashSecret (sha256) for API/profile keys
 tests/
   helpers/test-app.ts     testDeps() (silent logger, :memory:) and harnessApp() — real middleware + test-defined routes, so error paths are tested without test-only routes in src
   unit/                   pure modules: config, money, logger, schema, mapper, service (mock client)
@@ -230,7 +242,9 @@ docs/
   tiktok-boost.md         developer docs for the endpoint (deliverable)
 ```
 
-Auth here is simulated: API keys and profiles (with their linked TikTok advertiser ID/token) are seeded in SQLite. The middleware still behaves like Ayrshare's (401 for missing/invalid key, 403 for wrong/suspended profile).
+Auth is simulated but behaves like Ayrshare's: accounts (primary API key) own User Profiles; `Authorization: Bearer <key>` resolves the account, optional `Profile-Key` selects a profile, otherwise the primary profile is used. All `/api` routes sit behind `authenticate`, so a request without a valid key gets 401 even for unknown routes; `/health` is public. API/profile keys are stored only as SHA-256 hashes. The linked TikTok ads account (advertiser ID + access token) lives on the profile; the 601 "not linked" check is per endpoint (`requireTikTokAdsLink`), not in the auth middleware. Demo keys are in `src/db/seed.ts` (`DEMO`), e.g. `Authorization: Bearer demo-api-key-active`, `Profile-Key: demo-profile-key-creator`.
+
+Persistence conventions: repositories are **synchronous** (better-sqlite3 is synchronous; keeps transactions simple — a networked DB would make them async). Schema changes are new entries in `src/db/migrations.ts`, never edits to shipped ones; each milestone adds the tables it needs (boosts in M6, idempotency/audit in M7). Rows are snake_case and mapped to camelCase domain types inside the repository; timestamps are ISO-8601 UTC text.
 
 ## Commands
 
@@ -238,6 +252,7 @@ Requires Node ≥ 20.19 (`.nvmrc`; ESLint 10 and better-sqlite3's native build n
 
 ```bash
 npm run dev            # tsx watch src/server.ts
+npm run seed           # migrate + upsert demo accounts/profiles into DATABASE_PATH (idempotent)
 npm run build          # tsc -p tsconfig.build.json → dist/
 npm start              # node dist/server.js
 npm run typecheck      # tsc --noEmit (covers src, tests, config files)

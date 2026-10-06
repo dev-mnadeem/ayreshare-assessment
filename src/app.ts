@@ -2,12 +2,15 @@ import express, { type Express } from 'express';
 
 import type { Config } from './config/env.js';
 import type { Logger } from './logger.js';
+import { authenticate } from './middleware/authenticate.js';
 import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
 import { requestContext } from './middleware/request-context.js';
+import type { AuthRepository } from './modules/auth/auth-repository.js';
 
 export interface AppDeps {
   readonly config: Config;
   readonly logger: Logger;
+  readonly authRepository: AuthRepository;
 }
 
 const JSON_BODY_LIMIT = '100kb';
@@ -36,6 +39,9 @@ export function createApp(deps: AppDeps): Express {
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  // Every /api route is authenticated, as on Ayrshare. Routers are mounted below from M8.
+  app.use('/api', authenticate(deps.authRepository));
 
   installErrorHandling(app);
   return app;

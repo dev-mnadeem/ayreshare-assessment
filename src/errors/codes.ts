@@ -99,6 +99,18 @@ export const ERROR_CODES = {
     action: 'request',
     message: 'An unexpected error occurred. Please try again or contact us if the issue persists.',
   },
+  PROFILE_KEY_INVALID: {
+    code: 613,
+    httpStatus: 403,
+    action: 'request',
+    message: 'Profile-Key not valid for this API Key.',
+  },
+  ACCESS_SUSPENDED: {
+    code: 614,
+    httpStatus: 403,
+    action: 'request',
+    message: 'Access denied. The account or User Profile is suspended.',
+  },
 } as const satisfies Record<string, ErrorDefinition>;
 
 export type ErrorKey = keyof typeof ERROR_CODES;

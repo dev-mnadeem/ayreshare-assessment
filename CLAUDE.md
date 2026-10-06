@@ -199,6 +199,18 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 - Mock (`TIKTOK_MODE=mock`, and all tests): validates tokens, post ownership, Spark codes (`DEMO.sparkCodes`), daily budget ≥ $20, parent ownership; `failNext(method, { kind: 'api' | 'rate_limit' | 'server' | 'timeout', afterSend? })` injects failures — `timeout` + `afterSend` performs the write and then fails (the ambiguous case).
 - Response `data` schemas are lenient (unknown keys ignored) and mostly UNVERIFIED; a shape mismatch surfaces as `malformed_response` naming the missing path.
 
+## Boost flow (M6) — `BoostService`
+
+1. **`plan()` — read-only pre-flight, nothing is created:** linked ads account (601) → advertiser must be USD (601) → resolve the post: `postId` via `posts` table (603 if not this profile's TikTok post), `tiktokPostId` → `TT_USER` identity matched by the profile's TikTok username then `identity/video/info` ownership check (603); `authCode` → `tt_video/authorize` (skipped on dry run) + `tt_video/info`, and the creator's authorization must outlast `endDate` (602) → countries → TikTok location IDs (101 for codes TikTok can't target).
+2. **Record:** a `boosts` row (`in_progress`) is written before the first create; TikTok IDs and `request_id`s are persisted after each step.
+3. **Create, all DISABLED:** campaign → ad group → ad. Names are `"<adName> - <boostId>"` (searchable in Ads Manager); `request_id` = `<boostId>-campaign|adgroup`.
+4. **Activate** only if `status: "active"`: ad → ad group → campaign (top-level switch last). `paused` leaves all three disabled → record `paused`.
+5. **On any failure after step 2:** delete children-first (ad → ad group → campaign); if a delete fails, disable instead; anything left is an `OrphanedObject` (`state`: disabled / enabled / unknown-id). Clean rollback → original error + "no money was spent", record `failed`. Orphans → **610** listing IDs and states (with a "pause it now" warning if any could still be enabled), record `cleanup_failed`.
+6. **Ambiguous create** (`TikTokError.ambiguous`): never retried — `findIdByName` decides: found → continue with it; absent → genuine failure; lookup fails → orphan with `id: null` ("may exist, created disabled").
+7. Non-TikTok errors (bugs) still roll back, are recorded with code 612, and are rethrown unchanged.
+
+`BoostService` takes `{ tiktok, boosts, posts, logger, now, newBoostId }` — inject a fixed clock and deterministic IDs in tests. `boost(auth, request, { onTikTokCall })` forwards every TikTok call record (M7 audit hook).
+
 ## Safety features (design requirements)
 
 These are the answer to requirement 2 — implement and document all of them:
@@ -237,10 +249,10 @@ src/
   modules/tiktok-boost/   (M4–M8)
     constants.ts          public API vocabulary (goals, enums, age edges, CTA types, minimums)
     schema.ts             validateBoostRequest(body, { now, maxCampaignDays }) → normalised BoostRequest (cents, Dates, PostReference, maxSpendCents)
-    controller.ts         HTTP ↔ service translation only
-    service.ts            orchestration: pre-flight → create (disabled) → enable → persist; rollback
-    mapper.ts             Ayrshare request ↔ TikTok payloads (enums, money, time, targeting)
-    repository.ts         SQLite access for boosts / idempotency / audit
+    types.ts              BoostRecord, BoostStatus, OrphanedObject
+    repository.ts         BoostRepository + PostRepository (Ayrshare post → TikTok video) on SQLite
+    service.ts            BoostService.plan() (read-only pre-flight) and .boost() (create → enable → persist; rollback)
+    controller.ts         (M8) HTTP ↔ service translation only
   integrations/tiktok/
     client.ts             TikTokAdsClient interface (pre-flight reads, Spark code, create, status, findIdByName)
     types.ts              TikTokCallContext (+ onCall trace hook), domain results, snake_case wire payloads
@@ -263,6 +275,7 @@ src/
     seed.ts               DEMO keys/IDs + idempotent seedDemoData(db)
   scripts/seed.ts         `npm run seed` CLI
   lib/secrets.ts          hashSecret (sha256) for API/profile keys
+  lib/ids.ts              newBoostId() → "bst_<20 hex>"
 tests/
   helpers/test-app.ts     testDeps() (silent logger, :memory:) and harnessApp() — real middleware + test-defined routes, so error paths are tested without test-only routes in src
   unit/                   pure modules: config, money, logger, schema, mapper, service (mock client)

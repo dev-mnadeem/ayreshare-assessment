@@ -75,6 +75,7 @@ export class MockTikTokClient implements TikTokAdsClient {
   private readonly byRequestId = new Map<string, string>();
   private readonly authorizedSparkCodes = new Map<string, Set<string>>();
   private readonly failures = new Map<MockMethod, MockFailure[]>();
+  private sparkAuthEndTime = new Date('2099-01-01T00:00:00Z');
   private sequence = 0;
   private requestSequence = 0;
 
@@ -114,6 +115,11 @@ export class MockTikTokClient implements TikTokAdsClient {
   setAdvertiserCurrency(advertiserId: string, currency: string): void {
     const adv = this.requireAdvertiser(advertiserId);
     this.advertisers.set(advertiserId, { ...adv, info: { ...adv.info, currency } });
+  }
+
+  /** When the creator's Spark authorization (for DEMO.sparkCodes.valid) expires. */
+  setSparkAuthEndTime(date: Date): void {
+    this.sparkAuthEndTime = date;
   }
 
   getObject(id: string): MockObject | undefined {
@@ -184,7 +190,7 @@ export class MockTikTokClient implements TikTokAdsClient {
         identityId: DEMO.sparkVideo.identityId,
         identityType: 'AUTH_CODE',
         caption: 'Creator Spark video',
-        authEndTime: new Date('2099-01-01T00:00:00Z'),
+        authEndTime: this.sparkAuthEndTime,
       };
     });
   }

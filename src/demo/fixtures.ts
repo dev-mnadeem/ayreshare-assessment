@@ -44,6 +44,24 @@ export const DEMO = {
     itemId: '7400000000000000001',
     identityId: 'mock-identity-spark-creator',
   },
+  /** Ayrshare post IDs (as returned by POST /api/post) for TikTok videos above. */
+  ayrsharePosts: {
+    primaryFirst: {
+      postId: 'demoPostPrimary1',
+      profileId: 'prof_demo_primary',
+      video: '7300000000000000001',
+    },
+    primarySecond: {
+      postId: 'demoPostPrimary2',
+      profileId: 'prof_demo_primary',
+      video: '7300000000000000002',
+    },
+    creator: {
+      postId: 'demoPostCreator1',
+      profileId: 'prof_demo_creator',
+      video: '7300000000000000101',
+    },
+  },
 } as const;
 
 /** ISO country → TikTok location ID served by the mock (real IDs are TikTok's geoname-style IDs). */

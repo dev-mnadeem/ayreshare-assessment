@@ -127,6 +127,12 @@ export function seedDemoData(db: Db): void {
       tiktok_access_token = excluded.tiktok_access_token, tiktok_username = excluded.tiktok_username
   `);
 
+  const upsertPost = db.prepare<[string, string, string]>(`
+    INSERT INTO posts (id, profile_id, platform, platform_post_id) VALUES (?, ?, 'tiktok', ?)
+    ON CONFLICT (id) DO UPDATE SET
+      profile_id = excluded.profile_id, platform_post_id = excluded.platform_post_id
+  `);
+
   db.transaction(() => {
     for (const a of ACCOUNTS) {
       upsertAccount.run(a.id, a.name, hashSecret(a.apiKey), a.status);
@@ -143,6 +149,9 @@ export function seedDemoData(db: Db): void {
         p.tiktok?.accessToken ?? null,
         p.tiktok?.username ?? null,
       );
+    }
+    for (const post of Object.values(DEMO.ayrsharePosts)) {
+      upsertPost.run(post.postId, post.profileId, post.video);
     }
   })();
 }

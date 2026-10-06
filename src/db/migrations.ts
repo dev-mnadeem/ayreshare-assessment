@@ -46,4 +46,54 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX profiles_one_primary_per_account ON profiles (account_id) WHERE is_primary = 1;
     `,
   },
+  {
+    id: 2,
+    name: 'posts_and_boosts',
+    sql: `
+      -- Posts published through Ayrshare; maps an Ayrshare post ID to the TikTok video it created.
+      CREATE TABLE posts (
+        id                TEXT PRIMARY KEY,
+        profile_id        TEXT NOT NULL REFERENCES profiles (id),
+        platform          TEXT NOT NULL CHECK (platform IN ('tiktok')),
+        platform_post_id  TEXT NOT NULL,
+        created_at        TEXT NOT NULL DEFAULT ${NOW}
+      );
+      CREATE INDEX posts_profile_id ON posts (profile_id);
+
+      -- One row per boost attempt that reached the creation phase. Written before the first
+      -- TikTok create and updated after every step, so a crash mid-flow still leaves a trail.
+      CREATE TABLE boosts (
+        id                  TEXT PRIMARY KEY,
+        account_id          TEXT NOT NULL REFERENCES accounts (id),
+        profile_id          TEXT NOT NULL REFERENCES profiles (id),
+        advertiser_id       TEXT NOT NULL,
+        status              TEXT NOT NULL
+                            CHECK (status IN ('in_progress', 'live', 'paused', 'failed', 'cleanup_failed')),
+        requested_status    TEXT NOT NULL CHECK (requested_status IN ('active', 'paused')),
+        ad_name             TEXT NOT NULL,
+        goal                TEXT NOT NULL,
+        post_kind           TEXT NOT NULL,
+        ayrshare_post_id    TEXT,
+        tiktok_item_id      TEXT NOT NULL,
+        identity_type       TEXT NOT NULL,
+        identity_id         TEXT NOT NULL,
+        budget_type         TEXT NOT NULL CHECK (budget_type IN ('daily', 'total')),
+        budget_cents        INTEGER NOT NULL CHECK (budget_cents > 0),
+        max_spend_cents     INTEGER NOT NULL CHECK (max_spend_cents > 0),
+        start_at            TEXT NOT NULL,
+        end_at              TEXT NOT NULL,
+        request_json        TEXT NOT NULL,  -- normalised request; secrets (authCode) masked
+        campaign_id         TEXT,
+        adgroup_id          TEXT,
+        ad_id               TEXT,
+        orphans_json        TEXT NOT NULL DEFAULT '[]',
+        tiktok_request_ids  TEXT NOT NULL DEFAULT '[]',
+        error_code          INTEGER,
+        error_details       TEXT,
+        created_at          TEXT NOT NULL DEFAULT ${NOW},
+        updated_at          TEXT NOT NULL DEFAULT ${NOW}
+      );
+      CREATE INDEX boosts_profile_id ON boosts (profile_id, created_at);
+    `,
+  },
 ];

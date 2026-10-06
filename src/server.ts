@@ -1,10 +1,10 @@
 import { existsSync } from 'node:fs';
 
 import { createApp } from './app.js';
+import { buildAppDeps } from './composition.js';
 import { ConfigError, loadConfig } from './config/env.js';
 import { openDatabase } from './db/database.js';
 import { createLogger } from './logger.js';
-import { SqliteAuthRepository } from './modules/auth/auth-repository.js';
 
 const SHUTDOWN_TIMEOUT_MS = 10_000;
 
@@ -16,7 +16,7 @@ function main(): void {
   const config = loadConfig();
   const logger = createLogger(config);
   const db = openDatabase(config.databasePath);
-  const app = createApp({ config, logger, authRepository: new SqliteAuthRepository(db) });
+  const app = createApp(buildAppDeps(config, db, logger));
 
   const server = app.listen(config.port, () => {
     logger.info({ port: config.port, tiktokMode: config.tiktok.mode }, 'server listening');

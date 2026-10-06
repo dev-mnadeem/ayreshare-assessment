@@ -6,11 +6,13 @@ import { authenticate } from './middleware/authenticate.js';
 import { errorHandler, notFoundHandler } from './middleware/error-handler.js';
 import { requestContext } from './middleware/request-context.js';
 import type { AuthRepository } from './modules/auth/auth-repository.js';
+import { tiktokBoostRouter, type TikTokBoostRouterDeps } from './modules/tiktok-boost/routes.js';
 
 export interface AppDeps {
   readonly config: Config;
   readonly logger: Logger;
   readonly authRepository: AuthRepository;
+  readonly tiktokBoost: TikTokBoostRouterDeps;
 }
 
 const JSON_BODY_LIMIT = '100kb';
@@ -40,8 +42,9 @@ export function createApp(deps: AppDeps): Express {
     res.json({ status: 'ok' });
   });
 
-  // Every /api route is authenticated, as on Ayrshare. Routers are mounted below from M8.
+  // Every /api route is authenticated, as on Ayrshare.
   app.use('/api', authenticate(deps.authRepository));
+  app.use('/api/ads/tiktok', tiktokBoostRouter(deps.tiktokBoost));
 
   installErrorHandling(app);
   return app;

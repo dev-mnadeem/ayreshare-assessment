@@ -3,7 +3,11 @@ import { afterEach, beforeAll, afterAll, describe, expect, it } from 'vitest';
 
 import { TikTokError } from '../../src/integrations/tiktok/errors.js';
 import { HttpTikTokClient } from '../../src/integrations/tiktok/http-client.js';
-import { buildCampaignPayload } from '../../src/integrations/tiktok/mapper.js';
+import {
+  buildAdGroupPayload,
+  buildAdPayload,
+  buildCampaignPayload,
+} from '../../src/integrations/tiktok/mapper.js';
 import { RateLimiter } from '../../src/integrations/tiktok/rate-limiter.js';
 import type { TikTokCallRecord } from '../../src/integrations/tiktok/types.js';
 import { createLogger } from '../../src/logger.js';
@@ -280,5 +284,161 @@ describe('HttpTikTokClient — retry policy', () => {
 
     expect(err.kind).toBe('rate_limited');
     expect(records).toHaveLength(3);
+  });
+});
+
+describe('HttpTikTokClient — remaining endpoints (documents the expected response shapes)', () => {
+  const identity = { identityType: 'TT_USER', identityId: 'id-1', authorizedBcId: null } as const;
+
+  it('getIdentities: filters by type and drops non-Spark CUSTOMIZED_USER identities', async () => {
+    nock(HOST)
+      .get(`${BASE}/identity/get/`)
+      .query({ advertiser_id: ctx.advertiserId, identity_type: 'TT_USER' })
+      .reply(
+        200,
+        ok({
+          identity_list: [
+            { identity_id: 'id-1', identity_type: 'TT_USER', display_name: 'democo' },
+            { identity_id: 'id-2', identity_type: 'CUSTOMIZED_USER', display_name: 'brand' },
+          ],
+        }),
+      );
+
+    await expect(makeClient().client.getIdentities(ctx, 'TT_USER')).resolves.toEqual([
+      { identityId: 'id-1', identityType: 'TT_USER', displayName: 'democo', authorizedBcId: null },
+    ]);
+  });
+
+  it('getIdentityVideo: sends identity + item, maps video_detail', async () => {
+    nock(HOST)
+      .get(`${BASE}/identity/video/info/`)
+      .query({
+        advertiser_id: ctx.advertiserId,
+        identity_type: 'TT_USER',
+        identity_id: 'id-1',
+        item_id: '7300000000000000001',
+      })
+      .reply(200, ok({ video_detail: { item_id: '7300000000000000001', text: 'hello' } }));
+
+    await expect(
+      makeClient().client.getIdentityVideo(ctx, identity, '7300000000000000001'),
+    ).resolves.toEqual({ itemId: '7300000000000000001', caption: 'hello' });
+  });
+
+  it('getCountryLocationIds: keeps country-level regions keyed by ISO code', async () => {
+    nock(HOST)
+      .get(`${BASE}/tool/region/`)
+      .query({
+        advertiser_id: ctx.advertiserId,
+        placements: '["PLACEMENT_TIKTOK"]',
+        objective_type: 'ENGAGEMENT',
+      })
+      .reply(
+        200,
+        ok({
+          region_info: [
+            { location_id: '6252001', region_code: 'us', level: 'COUNTRY' },
+            { location_id: '5128638', region_code: 'US-NY', level: 'PROVINCE' },
+          ],
+        }),
+      );
+
+    const map = await makeClient().client.getCountryLocationIds(ctx, 'ENGAGEMENT');
+
+    expect([...map]).toEqual([['US', '6252001']]);
+  });
+
+  it('authorizeSparkCode posts the code; getSparkCodeInfo parses the expiry as UTC', async () => {
+    nock(HOST)
+      .post(`${BASE}/tt_video/authorize/`, { advertiser_id: ctx.advertiserId, auth_code: 'CODE' })
+      .reply(200, ok({}))
+      .get(`${BASE}/tt_video/info/`)
+      .query({ advertiser_id: ctx.advertiserId, auth_code: 'CODE' })
+      .reply(
+        200,
+        ok({
+          item_info: { item_id: '7400000000000000001', text: null },
+          user_info: { identity_id: 'spark-id' },
+          auth_info: { auth_end_time: '2026-11-01 10:00:00' },
+        }),
+      );
+    const { client } = makeClient();
+
+    await client.authorizeSparkCode(ctx, 'CODE');
+    await expect(client.getSparkCodeInfo(ctx, 'CODE')).resolves.toEqual({
+      itemId: '7400000000000000001',
+      identityId: 'spark-id',
+      identityType: 'AUTH_CODE',
+      caption: null,
+      authEndTime: new Date('2026-11-01T10:00:00Z'),
+    });
+  });
+
+  it('createAdGroup and createAd return the new IDs', async () => {
+    nock(HOST)
+      .post(`${BASE}/adgroup/create/`)
+      .reply(200, ok({ adgroup_id: 'g-1' }))
+      .post(`${BASE}/ad/create/`)
+      .reply(200, ok({ ad_ids: ['a-1'] }));
+    const { client } = makeClient();
+    const request = boostRequest();
+
+    await expect(
+      client.createAdGroup(ctx, {
+        ...buildAdGroupPayload({
+          advertiserId: ctx.advertiserId,
+          campaignId: 'c-1',
+          request,
+          name: 'n',
+          locationIds: ['6252001'],
+          requestId: 'r',
+        }),
+      }),
+    ).resolves.toBe('g-1');
+    await expect(
+      client.createAd(
+        ctx,
+        buildAdPayload({
+          advertiserId: ctx.advertiserId,
+          adGroupId: 'g-1',
+          request,
+          name: 'n',
+          identity,
+          itemId: '7300000000000000001',
+        }),
+      ),
+    ).resolves.toEqual(['a-1']);
+  });
+
+  it('findIdByName: filters children by parent and matches the exact name', async () => {
+    nock(HOST)
+      .get(`${BASE}/adgroup/get/`)
+      .query({
+        advertiser_id: ctx.advertiserId,
+        filtering: '{"campaign_ids":["c-1"]}',
+        page_size: '100',
+      })
+      .reply(
+        200,
+        ok({
+          list: [
+            { adgroup_id: 'g-0', adgroup_name: 'Fall launch - bst_1 (copy)' },
+            { adgroup_id: 'g-1', adgroup_name: 'Fall launch - bst_1' },
+          ],
+        }),
+      );
+
+    await expect(
+      makeClient().client.findIdByName(ctx, 'adgroup', 'Fall launch - bst_1', 'c-1'),
+    ).resolves.toBe('g-1');
+  });
+
+  it('findIdByName: returns null when nothing matches', async () => {
+    nock(HOST)
+      .get(`${BASE}/campaign/get/`)
+      .query(true)
+      .reply(200, ok({ list: [] }));
+
+    await expect(makeClient().client.findIdByName(ctx, 'campaign', 'missing')).resolves.toBeNull();
   });
 });

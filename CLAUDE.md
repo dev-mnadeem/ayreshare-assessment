@@ -158,6 +158,7 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 | 612  | 500  | `request`    | Unexpected internal error — generic message, `details` carries the request ID, nothing internal leaks  |
 | 613  | 403  | `request`    | `Profile-Key` unknown or belongs to another account (same answer for both — no enumeration)            |
 | 614  | 403  | `request`    | Account or User Profile suspended                                                                      |
+| 615  | 404  | `request`    | `GET /api/ads/tiktok/boost/:id` — unknown ID or another profile's boost (same answer)                  |
 
 ## Technical decisions
 
@@ -177,6 +178,14 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 | Config           | Env vars parsed and validated with Zod at startup (`src/config`); fail fast on invalid config                                                                                                                                          | No `process.env` reads elsewhere.                                                                                                    |
 | Money            | Accept USD decimals in the API; validate ≤ 2 decimals; handle internally as integer cents; convert only at the TikTok boundary                                                                                                         | Avoid floating-point money bugs.                                                                                                     |
 | Time             | Accept ISO 8601 with offset; store UTC; convert to TikTok's format/timezone only in the mapper                                                                                                                                         |                                                                                                                                      |
+
+## Endpoint (M8)
+
+- `POST /api/ads/tiktok/boost` — middleware order: requestContext → JSON body → `authenticate` (all `/api`) → `idempotency` → handler. Handler: `validateBoostRequest` (101s are audited as `boost.rejected`) → `dryRun ? service.preview → toDryRunResponse : service.boost → toBoostResponse`. Success is **HTTP 200** with `status: "success"` (as Facebook boost).
+- `GET /api/ads/tiktok/boost/:id` — same shape as POST for the caller's own profile (adds `error` and `orphans` for failed boosts); 615 otherwise. Added so callers can "look it up later"; read-only (update/pause/delete stay out of scope).
+- Response fields: `id` (boost ID), `boostStatus` (`live|paused|failed|cleanup_failed`), `adId`/`adGroupId`/`campaignId`, `adName` (= TikTok object name `"<adName> - <id>"`), `adStatus` (`active|paused|null`), `advertiserId`, `goal {type,title,description}`, `budget`, `budgetType`, `bidAmount`, `maxSpend`, `startDate`/`endDate`, `minAge`/`maxAge`, `gender`, `locations`, `interests`, `callToAction`, `postId`, `tiktokPostId`, `authorizationType` (`linked_account|spark_code`), `createdAt`. Dry run: same settings plus `dryRun: true`, `targetLocationIds`, `committedSpend`, `limits`, `sparkAuthorizationEndsAt`; no `id`.
+- The presenter builds both from the **stored** normalised request (Zod-parsed), so POST and GET can't drift. Spark codes never appear in responses.
+- Endpoint tests: `tests/integration/boost-endpoint.test.ts` drives `createApp(testDeps({}, { db, tiktok, env, newBoostId }))` — the production graph with mock TikTok and the fixed `TEST_NOW` clock.
 
 ## Request contract (M4)
 
@@ -231,7 +240,8 @@ Layered; dependencies point inward. Routes don't contain logic, services don't k
 
 ```
 src/
-  app.ts                  createApp(deps) + installCoreMiddleware / installErrorHandling — no listen()
+  app.ts                  createApp(deps) + installCoreMiddleware / installErrorHandling — no listen(); mounts /api/ads/tiktok
+  composition.ts          buildAppDeps(config, db, logger, overrides) — the one composition root (server + tests)
   server.ts               loads .env, config, logger; listen(); graceful SIGTERM/SIGINT shutdown
   logger.ts               pino factory + REDACT_PATHS (secrets never logged)
   config/env.ts           Zod-validated env → typed Config (money limits in cents); fail fast
@@ -252,7 +262,8 @@ src/
     types.ts              BoostRecord, BoostStatus, OrphanedObject
     repository.ts         BoostRepository + PostRepository (Ayrshare post → TikTok video) on SQLite
     service.ts            BoostService.plan() (read-only pre-flight) and .boost() (create → enable → persist; rollback)
-    controller.ts         (M8) HTTP ↔ service translation only
+    routes.ts             tiktokBoostRouter: POST /boost (idempotency → validate → preview | boost), GET /boost/:id
+    presenter.ts          toBoostResponse(record) / toDryRunResponse(request, preview) — Facebook-style JSON
   integrations/tiktok/
     client.ts             TikTokAdsClient interface (pre-flight reads, Spark code, create, status, findIdByName)
     types.ts              TikTokCallContext (+ onCall trace hook), domain results, snake_case wire payloads

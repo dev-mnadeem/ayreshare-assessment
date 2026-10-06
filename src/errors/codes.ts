@@ -111,6 +111,12 @@ export const ERROR_CODES = {
     action: 'request',
     message: 'Access denied. The account or User Profile is suspended.',
   },
+  BOOST_NOT_FOUND: {
+    code: 615,
+    httpStatus: 404,
+    action: 'request',
+    message: 'TikTok boost not found.',
+  },
 } as const satisfies Record<string, ErrorDefinition>;
 
 export type ErrorKey = keyof typeof ERROR_CODES;

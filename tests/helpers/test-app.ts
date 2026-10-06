@@ -1,11 +1,14 @@
 import express, { type Express } from 'express';
 
 import { installCoreMiddleware, installErrorHandling, type AppDeps } from '../../src/app.js';
+import { buildAppDeps, type CompositionOverrides } from '../../src/composition.js';
 import { loadConfig } from '../../src/config/env.js';
 import { IN_MEMORY, openDatabase, type Db } from '../../src/db/database.js';
 import { seedDemoData } from '../../src/db/seed.js';
 import { createLogger } from '../../src/logger.js';
-import { SqliteAuthRepository } from '../../src/modules/auth/auth-repository.js';
+import { MockTikTokClient } from '../../src/integrations/tiktok/mock-client.js';
+
+import { TEST_NOW } from './boost-request.js';
 
 /** A fresh, migrated, seeded in-memory database. */
 export function createTestDb(): Db {
@@ -14,14 +17,21 @@ export function createTestDb(): Db {
   return db;
 }
 
-export function testDeps(overrides: Partial<AppDeps> = {}): AppDeps {
-  const config = loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', DATABASE_PATH: IN_MEMORY });
-  return {
-    config,
-    logger: createLogger(config),
-    authRepository: new SqliteAuthRepository(createTestDb()),
-    ...overrides,
-  };
+export const testConfig = (env: NodeJS.ProcessEnv = {}) =>
+  loadConfig({ NODE_ENV: 'test', LOG_LEVEL: 'silent', DATABASE_PATH: IN_MEMORY, ...env });
+
+/** The production dependency graph on an in-memory DB, mock TikTok and a fixed clock. */
+export function testDeps(
+  overrides: Partial<AppDeps> = {},
+  options: CompositionOverrides & { db?: Db; env?: NodeJS.ProcessEnv } = {},
+): AppDeps {
+  const config = testConfig(options.env);
+  const deps = buildAppDeps(config, options.db ?? createTestDb(), createLogger(config), {
+    tiktok: options.tiktok ?? new MockTikTokClient(),
+    now: options.now ?? (() => TEST_NOW),
+    ...(options.newBoostId && { newBoostId: options.newBoostId }),
+  });
+  return { ...deps, ...overrides };
 }
 
 /**

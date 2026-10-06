@@ -36,6 +36,22 @@ export function toTikTokDateTime(date: Date): string {
   );
 }
 
+const TIKTOK_DATE_TIME = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/;
+const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/i;
+
+/**
+ * Parses a TikTok timestamp: "YYYY-MM-DD HH:MM:SS" in UTC, or ISO 8601 with an explicit offset
+ * (accepted too, because the format is UNVERIFIED (M0)). Returns null for anything else, so a
+ * surprise format is reported instead of becoming an Invalid Date that slips past comparisons.
+ */
+export function fromTikTokDateTime(value: string): Date | null {
+  const plain = TIKTOK_DATE_TIME.exec(value);
+  const iso = plain ? `${plain[1] ?? ''}T${plain[2] ?? ''}Z` : value;
+  if (!plain && !ISO_WITH_OFFSET.test(value)) return null;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 /** TikTok age buckets fully inside [minAge, maxAge] (schema guarantees bucket-edge values). */
 export function toAgeGroups(minAge: number, maxAge: number): string[] {
   return AGE_BUCKETS.filter((b) => b.min >= minAge && b.max <= maxAge).map((b) => b.value);

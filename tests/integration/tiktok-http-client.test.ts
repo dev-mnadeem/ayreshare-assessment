@@ -374,6 +374,43 @@ describe('HttpTikTokClient — remaining endpoints (documents the expected respo
     });
   });
 
+  it('getSparkCodeInfo also accepts an ISO 8601 expiry with an offset', async () => {
+    nock(HOST)
+      .get(`${BASE}/tt_video/info/`)
+      .query(true)
+      .reply(
+        200,
+        ok({
+          item_info: { item_id: '7400000000000000001' },
+          user_info: { identity_id: 'spark-id' },
+          auth_info: { auth_end_time: '2026-11-01T12:00:00+02:00' },
+        }),
+      );
+
+    const info = await makeClient().client.getSparkCodeInfo(ctx, 'CODE');
+
+    expect(info.authEndTime).toEqual(new Date('2026-11-01T10:00:00Z'));
+  });
+
+  it('getSparkCodeInfo rejects an unreadable expiry instead of returning an Invalid Date', async () => {
+    nock(HOST)
+      .get(`${BASE}/tt_video/info/`)
+      .query(true)
+      .reply(
+        200,
+        ok({
+          item_info: { item_id: '7400000000000000001' },
+          user_info: { identity_id: 'spark-id' },
+          auth_info: { auth_end_time: '1 Nov 2026' },
+        }),
+      );
+
+    const err = await caught(makeClient({ maxRetries: 0 }).client.getSparkCodeInfo(ctx, 'CODE'));
+
+    expect(err.kind).toBe('malformed_response');
+    expect(err.tiktokMessage).toMatch(/auth_info\.auth_end_time/);
+  });
+
   it('createAdGroup and createAd return the new IDs', async () => {
     nock(HOST)
       .post(`${BASE}/adgroup/create/`)

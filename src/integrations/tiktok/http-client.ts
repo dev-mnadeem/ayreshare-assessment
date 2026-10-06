@@ -5,6 +5,7 @@ import type { Logger } from '../../logger.js';
 import type { TikTokAdsClient } from './client.js';
 import { ENDPOINTS, type IdentityType, type OperationStatus, PLACEMENTS } from './constants.js';
 import { kindForCode, TikTokError, type TikTokErrorKind } from './errors.js';
+import { fromTikTokDateTime } from './mapper.js';
 import { realSleep, type RateLimiter, type Sleep } from './rate-limiter.js';
 import type {
   AdCreatePayload,
@@ -63,7 +64,20 @@ const identityVideoData = z.object({ video_detail: itemInfo });
 const sparkInfoData = z.object({
   item_info: itemInfo,
   user_info: z.object({ identity_id: z.string() }),
-  auth_info: z.object({ auth_end_time: z.string().nullish() }).nullish(),
+  auth_info: z
+    .object({
+      auth_end_time: z
+        .string()
+        .nullish()
+        .transform((value, ctx) => {
+          if (!value) return null;
+          const date = fromTikTokDateTime(value);
+          if (date) return date;
+          ctx.addIssue({ code: 'custom', message: 'not a recognised date-time' });
+          return z.NEVER;
+        }),
+    })
+    .nullish(),
 });
 
 const regionData = z.object({
@@ -219,13 +233,12 @@ export class HttpTikTokClient implements TikTokAdsClient {
       advertiser_id: ctx.advertiserId,
       auth_code: authCode,
     });
-    const end = data.auth_info?.auth_end_time;
     return {
       itemId: data.item_info.item_id,
       identityId: data.user_info.identity_id,
       identityType: 'AUTH_CODE',
       caption: data.item_info.text ?? null,
-      authEndTime: end ? new Date(`${end.replace(' ', 'T')}Z`) : null,
+      authEndTime: data.auth_info?.auth_end_time ?? null,
     };
   }
 

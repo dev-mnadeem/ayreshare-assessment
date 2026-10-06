@@ -6,6 +6,7 @@ import {
   buildCampaignPayload,
   resolveLocationIds,
   toAgeGroups,
+  fromTikTokDateTime,
   toTikTokDateTime,
 } from '../../src/integrations/tiktok/mapper.js';
 import { boostRequest } from '../helpers/boost-request.js';
@@ -17,6 +18,29 @@ describe('toTikTokDateTime', () => {
   it('formats in UTC as "YYYY-MM-DD HH:MM:SS"', () => {
     expect(toTikTokDateTime(new Date('2026-01-02T03:04:05.678+02:00'))).toBe('2026-01-02 01:04:05');
   });
+});
+
+describe('fromTikTokDateTime', () => {
+  it('reads "YYYY-MM-DD HH:MM:SS" as UTC and round-trips with toTikTokDateTime', () => {
+    const date = fromTikTokDateTime('2026-11-01 10:00:00');
+    expect(date).toEqual(new Date('2026-11-01T10:00:00Z'));
+    expect(date && toTikTokDateTime(date)).toBe('2026-11-01 10:00:00');
+  });
+
+  it.each([
+    ['2026-11-01T10:00:00Z', '2026-11-01T10:00:00.000Z'],
+    ['2026-11-01T12:00:00+02:00', '2026-11-01T10:00:00.000Z'],
+    ['2026-11-01T10:00:00.250Z', '2026-11-01T10:00:00.250Z'],
+  ])('accepts ISO 8601 with an offset: %s', (input, expected) => {
+    expect(fromTikTokDateTime(input)?.toISOString()).toBe(expected);
+  });
+
+  it.each(['', '2026-11-01', '2026-11-01T10:00:00', '1 Nov 2026', '2026-13-45 99:00:00'])(
+    'returns null for %j',
+    (input) => {
+      expect(fromTikTokDateTime(input)).toBeNull();
+    },
+  );
 });
 
 describe('toAgeGroups', () => {

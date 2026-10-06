@@ -59,8 +59,8 @@ export interface Config {
     readonly maxQps: number;
     readonly timeoutMs: number;
   };
+  /** Money is held as integer cents everywhere inside the app. */
   readonly limits: {
-    /** Money is held as integer cents everywhere inside the app. */
     /** Cap on one boost's worst-case spend (daily × days, or the total budget). */
     readonly maxSpendPerBoostCents: number;
     /** Cap on the summed worst-case spend of a profile's running boosts. */

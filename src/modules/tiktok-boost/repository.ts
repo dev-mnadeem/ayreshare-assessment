@@ -10,8 +10,20 @@ export interface PostRepository {
   findTikTokVideoId(profileId: string, postId: string): string | undefined;
 }
 
+export type CreateWithinCapResult =
+  | { readonly created: true; readonly record: BoostRecord }
+  | { readonly created: false; readonly committedCents: number };
+
 export interface BoostRepository {
   create(boost: NewBoost): BoostRecord;
+  /**
+   * Atomically checks the profile's committed spend and inserts the boost only if
+   * committed + boost.maxSpendCents stays within `capCents`. Prevents two concurrent boosts
+   * from both passing the cap.
+   */
+  createWithinProfileCap(boost: NewBoost, capCents: number, now: Date): CreateWithinCapResult;
+  /** Sum of worst-case spend of the profile's boosts that are running or could still run. */
+  committedSpendCents(profileId: string, now: Date): number;
   update(id: string, patch: BoostUpdate, now: Date): BoostRecord;
   findById(id: string): BoostRecord | undefined;
 }
@@ -114,6 +126,7 @@ const UPDATE_COLUMNS: {
 export class SqliteBoostRepository implements BoostRepository {
   private readonly insert;
   private readonly selectById;
+  private readonly sumCommitted;
 
   constructor(private readonly db: Db) {
     this.insert = db.prepare(`
@@ -129,6 +142,28 @@ export class SqliteBoostRepository implements BoostRepository {
       )
     `);
     this.selectById = db.prepare<[string], BoostRow>('SELECT * FROM boosts WHERE id = ?');
+    this.sumCommitted = db.prepare<[string, string], { total: number }>(`
+      SELECT COALESCE(SUM(max_spend_cents), 0) AS total FROM boosts
+      WHERE profile_id = ? AND status IN ('in_progress', 'live', 'paused') AND end_at > ?
+    `);
+  }
+
+  committedSpendCents(profileId: string, now: Date): number {
+    return this.sumCommitted.get(profileId, now.toISOString())?.total ?? 0;
+  }
+
+  createWithinProfileCap(boost: NewBoost, capCents: number, now: Date): CreateWithinCapResult {
+    // IMMEDIATE takes the write lock up front, so the check and insert can't interleave with
+    // another writer (relevant if several processes share the database file).
+    return this.db
+      .transaction((): CreateWithinCapResult => {
+        const committedCents = this.committedSpendCents(boost.profileId, now);
+        if (committedCents + boost.maxSpendCents > capCents) {
+          return { created: false, committedCents };
+        }
+        return { created: true, record: this.create(boost) };
+      })
+      .immediate();
   }
 
   create(boost: NewBoost): BoostRecord {

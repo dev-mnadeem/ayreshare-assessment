@@ -209,21 +209,21 @@ Codes from the published Ayrshare list go up to 519 (plus 369 for Facebook boost
 6. **Ambiguous create** (`TikTokError.ambiguous`): never retried — `findIdByName` decides: found → continue with it; absent → genuine failure; lookup fails → orphan with `id: null` ("may exist, created disabled").
 7. Non-TikTok errors (bugs) still roll back, are recorded with code 612, and are rethrown unchanged.
 
-`BoostService` takes `{ tiktok, boosts, posts, logger, now, newBoostId }` — inject a fixed clock and deterministic IDs in tests. `boost(auth, request, { onTikTokCall })` forwards every TikTok call record (M7 audit hook).
+`BoostService` takes `{ tiktok, boosts, posts, audit, limits, logger, now, newBoostId }` — inject a fixed clock and deterministic IDs in tests. `boost(auth, request, { requestId, onTikTokCall })` and `preview(...)` (dry run) audit every step; tests use `tests/helpers/boost-service.ts` (`setupBoostService(limits?)`, `appError()`).
 
-## Safety features (design requirements)
+## Safety features (as built — requirement 2)
 
-These are the answer to requirement 2 — implement and document all of them:
+Each is implemented and tested; keep them intact when changing the flow.
 
-1. **Validate before spending.** Zod validation (types, enums, ranges, cross-field rules like `endDate > startDate`, `minAge ≤ maxAge`, exactly one post identifier), then **pre-flight checks** against TikTok (advertiser account accessible, post/auth code resolvable, objective supported for Spark) before any create call.
-2. **Bounded spend.** Require `endDate` (with a max campaign length) or a total budget so the worst case is computable; return `maxSpend` in the response. Enforce server-side per-request and per-profile spend caps (config) and TikTok minimum budgets with explicit `details`.
-3. **Idempotency.** Support an `Idempotency-Key` header: same key + same body replays the stored response; same key + different body → 409 with a clear `details`. Prevents double-charging on client retries.
-4. **Create disabled, then enable.** Create campaign and ad group with `DISABLE` status, create the ad, and only flip to `ENABLE` once every object exists (and only if requested `status` is `active`). Nothing can spend in a half-built state.
-5. **Compensating rollback.** If any step fails, delete/disable created objects in reverse order. Record any object that couldn't be cleaned up as `orphaned` in SQLite and surface it in the error `details` (Facebook boost does the same).
-6. **`dryRun: true`.** Runs validation + pre-flight and returns the exact plan (resolved targeting, schedule, `maxSpend`) without creating anything.
-7. **Safe retries.** Throttle outbound TikTok calls (sandbox 1 QPS). Retry only on transient/rate-limit responses for reads; never blindly retry a `create` call after an ambiguous failure (timeout after send) — reconcile instead (read back via `*/get/`). Send a deterministic TikTok `request_id` (boost ID + step) on campaign/ad-group create as a second dedupe layer.
-8. **Audit and traceability.** Persist every boost attempt with the Ayrshare boost ID, profile, inputs, TikTok object IDs, and TikTok `request_id`s. Embed the boost ID in TikTok object names so they can be found in Ads Manager.
-9. **Secret hygiene.** Never log access tokens, auth codes, or API keys (pino `redact`); mask them in stored audit rows.
+1. **Validate before spending** (M4): strict Zod schema + cross-field rules → 101, then read-only pre-flight against TikTok (M6) before any write.
+2. **Bounded spend + caps** (M4, M7): `endDate` required, so worst-case spend (`maxSpendCents` = daily × billing days, or the total) is always known. Caps on that figure: `MAX_SPEND_PER_BOOST` and `MAX_SPEND_PER_PROFILE` (sum over the profile's `in_progress|live|paused` boosts whose `end_at` is in the future) → **604**. Checked first (fast, no TikTok calls) and again inside an `IMMEDIATE` transaction with the boost insert, so concurrent boosts can't both slip under the profile cap.
+3. **Idempotency** (M7, `middleware/idempotency.ts`): optional `Idempotency-Key` (1-255 visible ASCII), scoped per account; fingerprint = sha256 of canonical JSON of profile + method + path + body. Same key+body → stored response replayed with `Idempotent-Replayed: true`; different request → **608**; still running → **609**. Retryable outcomes (5xx, 429, 409) are not stored, so "retry with the same Idempotency-Key" works. Completed keys live 24 h; in-progress claims expire after 10 min (crash recovery). The claim is deliberately **not** released when the client disconnects — the running boost still stores its result.
+4. **Create disabled, then enable** (M5/M6): all objects `DISABLE` at creation; enabled ad → ad group → campaign only once all exist and only for `status: "active"`.
+5. **Compensating rollback + orphans** (M6): children-first delete, fallback disable; leftovers → **610** with IDs and whether they could still spend; boost row `cleanup_failed`.
+6. **Dry run** (M7): `BoostService.preview()` = caps + full pre-flight (Spark code inspected, not authorized); returns plan, `maxSpendCents`, committed spend and limits; no TikTok writes, no boost row.
+7. **Safe retries** (M5): rate limits retried for any method; other transient errors only for reads; ambiguous writes never retried — reconciled by name (M6); deterministic TikTok `request_id` per create.
+8. **Audit trail** (M7, `modules/audit/audit-log.ts`): `audit_events` rows — `boost.rejected | boost.dry_run | boost.started | boost.succeeded | boost.failed | tiktok.call | idempotency.replayed` — correlated by Ayrshare `X-Request-Id` and boost ID; every TikTok call with its `request_id`, code and outcome. Audit writes never throw into the boost.
+9. **Secret hygiene**: pino `redact`; keys stored hashed; `redactSecrets()` masks credential-named fields (`****last4`) in audit data; Spark codes masked on the boost row. TikTok access tokens are stored in plain text in this exercise (production: encrypt at rest).
 
 ## Architecture
 
@@ -242,7 +242,7 @@ src/
     request-context.ts    X-Request-Id (validated inbound or UUID), child logger, access log line
     error-handler.ts      404 + error → Ayrshare envelope; body-parser errors → 101
     authenticate.ts       Bearer API key → account; Profile-Key → profile (else primary); req.auth / getAuth(req)
-    (M7: idempotency)
+    idempotency.ts        Idempotency-Key: claim / replay / 608 / 609; stores only non-retryable outcomes
   errors/
     codes.ts              ERROR_CODES registry (code, httpStatus, action, message)
     app-error.ts          AppError (+ ValidationError, AuthenticationError, NotFoundError) → toEnvelope()
@@ -265,6 +265,10 @@ src/
     mock-client.ts        in-memory TikTok (DEMO fixtures), failNext() injection, request_id dedupe
     factory.ts            createTikTokClient(config, logger) by TIKTOK_MODE
   demo/fixtures.ts        DEMO keys, advertisers, tokens, video IDs, Spark codes — shared by seed + mock
+  modules/audit/
+    audit-log.ts          AuditLog (append-only, never throws) + SqliteAuditLog; redacts secrets on write
+  modules/idempotency/
+    repository.ts         IdempotencyRepository (tryBegin / complete / release) on SQLite
   modules/auth/
     types.ts              Account, Profile, TikTokAdsLink, AuthContext
     auth-repository.ts    AuthRepository interface + SqliteAuthRepository (lookups by key hash)
@@ -274,7 +278,7 @@ src/
     migrations.ts         append-only MIGRATIONS list; each runs once in a transaction
     seed.ts               DEMO keys/IDs + idempotent seedDemoData(db)
   scripts/seed.ts         `npm run seed` CLI
-  lib/secrets.ts          hashSecret (sha256) for API/profile keys
+  lib/secrets.ts          hashSecret (sha256), maskSecret (****last4), redactSecrets (deep, by field name)
   lib/ids.ts              newBoostId() → "bst_<20 hex>"
 tests/
   helpers/test-app.ts     testDeps() (silent logger, :memory:) and harnessApp() — real middleware + test-defined routes, so error paths are tested without test-only routes in src

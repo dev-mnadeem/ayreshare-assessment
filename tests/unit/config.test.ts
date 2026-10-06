@@ -22,7 +22,7 @@ describe('loadConfig', () => {
       logLevel: 'info',
       tiktok: { mode: 'mock', baseUrl: 'https://sandbox-ads.tiktok.com/open_api/v1.3' },
       limits: {
-        maxBudgetPerRequestCents: 500_000,
+        maxSpendPerBoostCents: 500_000,
         maxSpendPerProfileCents: 2_000_000,
         maxCampaignDays: 90,
       },
@@ -30,10 +30,10 @@ describe('loadConfig', () => {
   });
 
   it('coerces numeric env strings and converts USD limits to cents', () => {
-    const config = loadConfig({ PORT: '8080', MAX_BUDGET_PER_REQUEST: '19.99' });
+    const config = loadConfig({ PORT: '8080', MAX_SPEND_PER_BOOST: '19.99' });
 
     expect(config.port).toBe(8080);
-    expect(config.limits.maxBudgetPerRequestCents).toBe(1999);
+    expect(config.limits.maxSpendPerBoostCents).toBe(1999);
   });
 
   it('reports every invalid variable at once', () => {
@@ -53,8 +53,8 @@ describe('loadConfig', () => {
 
   it('rejects a per-request cap above the per-profile cap', () => {
     expect(
-      configErrorIssues({ MAX_BUDGET_PER_REQUEST: '500', MAX_SPEND_PER_PROFILE: '100' })[0],
-    ).toMatch(/MAX_BUDGET_PER_REQUEST: must not exceed MAX_SPEND_PER_PROFILE/);
+      configErrorIssues({ MAX_SPEND_PER_BOOST: '500', MAX_SPEND_PER_PROFILE: '100' })[0],
+    ).toMatch(/MAX_SPEND_PER_BOOST: must not exceed MAX_SPEND_PER_PROFILE/);
   });
 
   it('refuses live mode pointed at the sandbox host', () => {

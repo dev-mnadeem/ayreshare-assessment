@@ -25,7 +25,7 @@ const envSchema = z
     /** Outbound request rate; the Marketing API sandbox allows 1 QPS. */
     TIKTOK_MAX_QPS: z.coerce.number().positive().max(50).default(1),
     TIKTOK_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(120_000).default(15_000),
-    MAX_BUDGET_PER_REQUEST: usdAmount.default(5_000),
+    MAX_SPEND_PER_BOOST: usdAmount.default(5_000),
     MAX_SPEND_PER_PROFILE: usdAmount.default(20_000),
     MAX_CAMPAIGN_DAYS: z.coerce.number().int().min(1).max(365).default(90),
   })
@@ -41,8 +41,8 @@ const envSchema = z
       });
     }
   })
-  .refine((env) => env.MAX_BUDGET_PER_REQUEST <= env.MAX_SPEND_PER_PROFILE, {
-    path: ['MAX_BUDGET_PER_REQUEST'],
+  .refine((env) => env.MAX_SPEND_PER_BOOST <= env.MAX_SPEND_PER_PROFILE, {
+    path: ['MAX_SPEND_PER_BOOST'],
     message: 'must not exceed MAX_SPEND_PER_PROFILE',
   });
 
@@ -61,7 +61,9 @@ export interface Config {
   };
   readonly limits: {
     /** Money is held as integer cents everywhere inside the app. */
-    readonly maxBudgetPerRequestCents: number;
+    /** Cap on one boost's worst-case spend (daily × days, or the total budget). */
+    readonly maxSpendPerBoostCents: number;
+    /** Cap on the summed worst-case spend of a profile's running boosts. */
     readonly maxSpendPerProfileCents: number;
     readonly maxCampaignDays: number;
   };
@@ -96,7 +98,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): Config {
       timeoutMs: env.TIKTOK_TIMEOUT_MS,
     },
     limits: {
-      maxBudgetPerRequestCents: usdToCents(env.MAX_BUDGET_PER_REQUEST),
+      maxSpendPerBoostCents: usdToCents(env.MAX_SPEND_PER_BOOST),
       maxSpendPerProfileCents: usdToCents(env.MAX_SPEND_PER_PROFILE),
       maxCampaignDays: env.MAX_CAMPAIGN_DAYS,
     },

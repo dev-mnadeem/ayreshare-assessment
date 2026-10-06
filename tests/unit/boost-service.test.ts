@@ -1,65 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { DEMO } from '../../src/demo/fixtures.js';
-import { AppError, type ErrorEnvelope } from '../../src/errors/app-error.js';
 import { TikTokError } from '../../src/integrations/tiktok/errors.js';
-import { MockTikTokClient } from '../../src/integrations/tiktok/mock-client.js';
 import type { TikTokCallRecord } from '../../src/integrations/tiktok/types.js';
-import { createLogger } from '../../src/logger.js';
-import { SqliteAuthRepository } from '../../src/modules/auth/auth-repository.js';
-import type { AuthContext } from '../../src/modules/auth/types.js';
-import {
-  SqliteBoostRepository,
-  SqlitePostRepository,
-} from '../../src/modules/tiktok-boost/repository.js';
-import { BoostService } from '../../src/modules/tiktok-boost/service.js';
-import { boostRequest, TEST_NOW } from '../helpers/boost-request.js';
-import { createTestDb } from '../helpers/test-app.js';
+import { boostRequest } from '../helpers/boost-request.js';
+import { appError, setupBoostService } from '../helpers/boost-service.js';
 
 const primary = DEMO.advertisers.primary;
-
-function setup() {
-  const db = createTestDb();
-  const tiktok = new MockTikTokClient();
-  const boosts = new SqliteBoostRepository(db);
-  const authRepo = new SqliteAuthRepository(db);
-  let seq = 0;
-  const service = new BoostService({
-    tiktok,
-    boosts,
-    posts: new SqlitePostRepository(db),
-    logger: createLogger({ logLevel: 'silent', env: 'test' }),
-    now: () => TEST_NOW,
-    newBoostId: () => `bst_test${String(++seq)}`,
-  });
-
-  const auth = (profileKey?: string): AuthContext => {
-    const account = authRepo.findAccountByApiKey(DEMO.apiKey);
-    const profile = profileKey
-      ? authRepo.findProfileByKey('acc_demo', profileKey)
-      : authRepo.findPrimaryProfile('acc_demo');
-    if (!account || !profile) throw new Error('fixture missing');
-    return { account, profile };
-  };
-
-  const statuses = () =>
-    Object.fromEntries(tiktok.listObjects().map((o) => [o.level, o.status])) as Record<
-      string,
-      string
-    >;
-
-  return { service, tiktok, boosts, auth, statuses };
-}
-
-async function appError(promise: Promise<unknown>): Promise<ErrorEnvelope> {
-  try {
-    await promise;
-  } catch (err) {
-    if (err instanceof AppError) return err.toEnvelope();
-    throw err;
-  }
-  throw new Error('expected an AppError');
-}
+const setup = setupBoostService;
+type Setup = ReturnType<typeof setup>;
 
 describe('BoostService — happy paths', () => {
   it('boosts an own post by tiktokPostId: creates disabled, then enables all three', async () => {
@@ -179,14 +128,13 @@ describe('BoostService — pre-flight failures create nothing', () => {
   it.each([
     [
       'profile without TikTok ads',
-      (s: ReturnType<typeof setup>) =>
-        s.service.boost(s.auth(DEMO.profileKeys.noTikTok), boostRequest()),
+      (s: Setup) => s.service.boost(s.auth(DEMO.profileKeys.noTikTok), boostRequest()),
       601,
       /no linked TikTok ads account/,
     ],
     [
       'non-USD ad account',
-      (s: ReturnType<typeof setup>) => {
+      (s: Setup) => {
         s.tiktok.setAdvertiserCurrency(primary.advertiserId, 'EUR');
         return s.service.boost(s.auth(), boostRequest());
       },
@@ -195,14 +143,14 @@ describe('BoostService — pre-flight failures create nothing', () => {
     ],
     [
       'unknown Ayrshare postId',
-      (s: ReturnType<typeof setup>) =>
+      (s: Setup) =>
         s.service.boost(s.auth(), boostRequest({ tiktokPostId: undefined, postId: 'nope' })),
       603,
       /postId "nope" is not a TikTok post published by this profile/,
     ],
     [
       "another profile's Ayrshare postId",
-      (s: ReturnType<typeof setup>) =>
+      (s: Setup) =>
         s.service.boost(
           s.auth(),
           boostRequest({ tiktokPostId: undefined, postId: DEMO.ayrsharePosts.creator.postId }),
@@ -212,7 +160,7 @@ describe('BoostService — pre-flight failures create nothing', () => {
     ],
     [
       'video not owned by the linked account',
-      (s: ReturnType<typeof setup>) =>
+      (s: Setup) =>
         s.service.boost(
           s.auth(),
           boostRequest({ tiktokPostId: DEMO.advertisers.other.videoIds[0] }),
@@ -222,14 +170,14 @@ describe('BoostService — pre-flight failures create nothing', () => {
     ],
     [
       'invalid Spark code',
-      (s: ReturnType<typeof setup>) =>
+      (s: Setup) =>
         s.service.boost(s.auth(), boostRequest({ tiktokPostId: undefined, authCode: 'BAD' })),
       602,
       /Ask the creator for a new Spark authorization code/,
     ],
     [
       'Spark authorization ending before endDate',
-      (s: ReturnType<typeof setup>) => {
+      (s: Setup) => {
         s.tiktok.setSparkAuthEndTime(new Date('2026-10-10T00:00:00Z'));
         return s.service.boost(
           s.auth(),
@@ -241,14 +189,14 @@ describe('BoostService — pre-flight failures create nothing', () => {
     ],
     [
       'country TikTok cannot target',
-      (s: ReturnType<typeof setup>) =>
+      (s: Setup) =>
         s.service.boost(s.auth(), boostRequest({ locations: { countries: ['US', 'ZZ'] } })),
       101,
       /locations.countries contains codes TikTok cannot target for this ad account: ZZ/,
     ],
     [
       'TikTok rejecting the access token',
-      (s: ReturnType<typeof setup>) => {
+      (s: Setup) => {
         s.tiktok.failNext('getAdvertiser', { kind: 'api', code: 40105, message: 'expired' });
         return s.service.boost(s.auth(), boostRequest());
       },

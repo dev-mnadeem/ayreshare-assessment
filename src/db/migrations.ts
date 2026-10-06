@@ -96,4 +96,38 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX boosts_profile_id ON boosts (profile_id, created_at);
     `,
   },
+  {
+    id: 3,
+    name: 'idempotency_and_audit',
+    sql: `
+      -- Idempotency-Key records, scoped per account. A row is 'in_progress' while the first
+      -- request runs; its final response is stored so retries replay instead of re-executing.
+      CREATE TABLE idempotency_keys (
+        account_id       TEXT NOT NULL REFERENCES accounts (id),
+        key              TEXT NOT NULL,
+        fingerprint      TEXT NOT NULL,  -- sha256 of profile + method + path + canonical body
+        status           TEXT NOT NULL CHECK (status IN ('in_progress', 'completed')),
+        response_status  INTEGER,
+        response_body    TEXT,
+        created_at       TEXT NOT NULL,
+        completed_at     TEXT,
+        PRIMARY KEY (account_id, key)
+      );
+
+      -- Append-only trail of boost attempts, outcomes and every TikTok call. Secrets are
+      -- redacted before insert.
+      CREATE TABLE audit_events (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at  TEXT NOT NULL,
+        request_id  TEXT,
+        account_id  TEXT,
+        profile_id  TEXT,
+        boost_id    TEXT,
+        type        TEXT NOT NULL,
+        data_json   TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX audit_events_boost_id ON audit_events (boost_id);
+      CREATE INDEX audit_events_request_id ON audit_events (request_id);
+    `,
+  },
 ];

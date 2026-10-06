@@ -15,7 +15,10 @@ import type {
   TikTokCallContext,
   TikTokCallRecord,
 } from '../../integrations/tiktok/types.js';
+import { centsToUsd } from '../../lib/money.js';
+import { maskSecret } from '../../lib/secrets.js';
 import type { Logger } from '../../logger.js';
+import type { AuditEvent, AuditLog } from '../audit/audit-log.js';
 import { requireTikTokAdsLink } from '../auth/tiktok-ads-link.js';
 import type { AuthContext, TikTokAdsLink } from '../auth/types.js';
 
@@ -28,13 +31,28 @@ export interface BoostServiceDeps {
   readonly boosts: BoostRepository;
   readonly posts: PostRepository;
   readonly logger: Logger;
+  readonly audit: AuditLog;
+  readonly limits: {
+    readonly maxSpendPerBoostCents: number;
+    readonly maxSpendPerProfileCents: number;
+  };
   readonly now: () => Date;
   readonly newBoostId: () => string;
 }
 
 export interface BoostCallOptions {
-  /** Receives every TikTok call record (audit trail, M7). */
+  /** Ayrshare X-Request-Id, for correlating audit events. */
+  readonly requestId?: string;
+  /** Receives every TikTok call record (in addition to the audit log). */
   readonly onTikTokCall?: (record: TikTokCallRecord) => void;
+}
+
+/** What a dry run returns: the resolved plan plus the spend picture, with nothing created. */
+export interface BoostPreview {
+  readonly plan: BoostPlan;
+  readonly maxSpendCents: number;
+  readonly committedSpendCents: number;
+  readonly limits: BoostServiceDeps['limits'];
 }
 
 /** Everything resolved by pre-flight; creation needs nothing else from TikTok. */
@@ -49,6 +67,7 @@ export interface BoostPlan {
 }
 
 const SUPPORTED_CURRENCY = 'USD';
+const usd = (cents: number): string => centsToUsd(cents).toFixed(2);
 /** Activation order: the campaign is the top-level switch, so it is enabled last. */
 const ENABLE_ORDER: readonly ObjectLevel[] = ['ad', 'adgroup', 'campaign'];
 /** Cleanup order: children first. */
@@ -71,10 +90,6 @@ interface CreatedObjects {
   ad: string | null;
   readonly enabled: Set<ObjectLevel>;
   uncertain: UncertainCreateError | null;
-}
-
-function maskSecret(secret: string): string {
-  return `****${secret.slice(-4)}`;
 }
 
 /** The normalised request as stored on the boost row: JSON-safe, with the Spark code masked. */
@@ -140,44 +155,65 @@ export class BoostService {
     };
   }
 
+  /**
+   * Dry run: spend caps + full pre-flight, returning what would be created. Nothing is written to
+   * TikTok (Spark codes are inspected, not authorized) and no boost row is created.
+   */
+  async preview(
+    auth: AuthContext,
+    request: BoostRequest,
+    options: BoostCallOptions = {},
+  ): Promise<BoostPreview> {
+    const audit = this.auditor(auth, options.requestId, null);
+    try {
+      const committedSpendCents = this.checkSpendCaps(auth, request);
+      const plan = await this.plan(auth, request, {
+        dryRun: true,
+        onTikTokCall: this.tracer(audit, options.onTikTokCall),
+      });
+      audit({ type: 'boost.dry_run', data: { maxSpendCents: request.maxSpendCents, plan } });
+      return {
+        plan,
+        maxSpendCents: request.maxSpendCents,
+        committedSpendCents,
+        limits: this.deps.limits,
+      };
+    } catch (err) {
+      audit({ type: 'boost.rejected', data: { dryRun: true, ...this.errorSummary(err) } });
+      throw err;
+    }
+  }
+
   async boost(
     auth: AuthContext,
     request: BoostRequest,
     options: BoostCallOptions = {},
   ): Promise<BoostRecord> {
+    const boostId = this.deps.newBoostId();
+    const audit = this.auditor(auth, options.requestId, boostId);
     const requestIds: string[] = [];
+    const trace = this.tracer(audit, options.onTikTokCall);
     const collect = (record: TikTokCallRecord): void => {
       if (record.requestId) requestIds.push(record.requestId);
-      options.onTikTokCall?.(record);
+      trace(record);
     };
 
-    const plan = await this.plan(auth, request, { onTikTokCall: collect });
+    let plan: BoostPlan;
+    try {
+      this.checkSpendCaps(auth, request);
+      plan = await this.plan(auth, request, { onTikTokCall: collect });
+    } catch (err) {
+      audit({ type: 'boost.rejected', data: this.errorSummary(err) });
+      throw err;
+    }
     const ctx = this.callContext(requireTikTokAdsLink(auth.profile), collect);
-
-    const boostId = this.deps.newBoostId();
     const name = `${request.adName} - ${boostId}`;
     const log = this.deps.logger.child({ boostId, advertiserId: plan.advertiserId });
 
-    this.deps.boosts.create({
-      id: boostId,
-      accountId: auth.account.id,
-      profileId: auth.profile.id,
-      advertiserId: plan.advertiserId,
-      requestedStatus: request.status,
-      adName: request.adName,
-      goal: request.goal,
-      postKind: request.post.kind,
-      ayrsharePostId: plan.ayrsharePostId,
-      tiktokItemId: plan.tiktokItemId,
-      identityType: plan.identity.identityType,
-      identityId: plan.identity.identityId,
-      budgetType: request.budget.type,
-      budgetCents: request.budget.amountCents,
-      maxSpendCents: request.maxSpendCents,
-      startAt: request.schedule.start,
-      endAt: request.schedule.end,
-      request: storableRequest(request),
-      createdAt: this.deps.now(),
+    this.createBoostRow(auth, request, plan, boostId, audit);
+    audit({
+      type: 'boost.started',
+      data: { request: storableRequest(request), plan, maxSpendCents: request.maxSpendCents },
     });
 
     const created: CreatedObjects = {
@@ -250,10 +286,20 @@ export class BoostService {
       }
 
       log.info({ status: request.status }, 'boost created');
-      return this.persist(boostId, {
+      const record = this.persist(boostId, {
         status: request.status === 'active' ? 'live' : 'paused',
         tiktokRequestIds: requestIds,
       });
+      audit({
+        type: 'boost.succeeded',
+        data: {
+          status: record.status,
+          campaignId: record.campaignId,
+          adGroupId: record.adGroupId,
+          adId: record.adId,
+        },
+      });
+      return record;
     } catch (err) {
       if (err instanceof UncertainCreateError) created.uncertain = err;
       const failure = this.toAppError(err, step);
@@ -277,10 +323,125 @@ export class BoostService {
         // Never mask the boost failure; the orphans are still reported to the caller.
         log.error({ err: persistErr, orphans }, 'failed to record boost failure');
       }
+      audit({
+        type: 'boost.failed',
+        data: {
+          step,
+          orphans,
+          created: { ...created, enabled: [...created.enabled], uncertain: undefined },
+          ...this.errorSummary(reported ?? err),
+        },
+      });
 
       // Programming errors keep their stack and become a generic 500 upstream.
       throw reported ?? err;
     }
+  }
+
+  // ---- safety helpers ------------------------------------------------------------
+
+  /**
+   * Fast, local spend checks before any TikTok call. Returns the profile's committed spend.
+   * The profile cap is re-checked atomically when the boost row is inserted.
+   */
+  private checkSpendCaps(auth: AuthContext, request: BoostRequest): number {
+    const { maxSpendPerBoostCents, maxSpendPerProfileCents } = this.deps.limits;
+    const spend = request.maxSpendCents;
+    const basis =
+      request.budget.type === 'daily'
+        ? `${usd(request.budget.amountCents)} USD/day × ${String(request.schedule.days)} days`
+        : 'total budget';
+
+    if (spend > maxSpendPerBoostCents) {
+      throw new AppError(
+        'SPEND_CAP_EXCEEDED',
+        `This boost could spend up to ${usd(spend)} USD (${basis}), above the per-boost limit of ${usd(maxSpendPerBoostCents)} USD. Lower the budget or shorten the schedule.`,
+      );
+    }
+    const committed = this.deps.boosts.committedSpendCents(auth.profile.id, this.deps.now());
+    if (committed + spend > maxSpendPerProfileCents) {
+      throw this.profileCapError(committed, spend);
+    }
+    return committed;
+  }
+
+  private profileCapError(committedCents: number, spendCents: number): AppError {
+    return new AppError(
+      'SPEND_CAP_EXCEEDED',
+      `This profile's running boosts could already spend up to ${usd(committedCents)} USD; this boost adds up to ${usd(spendCents)} USD, above the profile limit of ${usd(this.deps.limits.maxSpendPerProfileCents)} USD. Lower the budget or wait for running boosts to end.`,
+    );
+  }
+
+  /** Inserts the boost row, re-checking the profile cap in the same transaction. */
+  private createBoostRow(
+    auth: AuthContext,
+    request: BoostRequest,
+    plan: BoostPlan,
+    boostId: string,
+    audit: (event: Omit<AuditEvent, 'requestId' | 'accountId' | 'profileId' | 'boostId'>) => void,
+  ): void {
+    const result = this.deps.boosts.createWithinProfileCap(
+      {
+        id: boostId,
+        accountId: auth.account.id,
+        profileId: auth.profile.id,
+        advertiserId: plan.advertiserId,
+        requestedStatus: request.status,
+        adName: request.adName,
+        goal: request.goal,
+        postKind: request.post.kind,
+        ayrsharePostId: plan.ayrsharePostId,
+        tiktokItemId: plan.tiktokItemId,
+        identityType: plan.identity.identityType,
+        identityId: plan.identity.identityId,
+        budgetType: request.budget.type,
+        budgetCents: request.budget.amountCents,
+        maxSpendCents: request.maxSpendCents,
+        startAt: request.schedule.start,
+        endAt: request.schedule.end,
+        request: storableRequest(request),
+        createdAt: this.deps.now(),
+      },
+      this.deps.limits.maxSpendPerProfileCents,
+      this.deps.now(),
+    );
+    if (!result.created) {
+      // Another boost for this profile was committed while our pre-flight ran.
+      const error = this.profileCapError(result.committedCents, request.maxSpendCents);
+      audit({ type: 'boost.rejected', data: this.errorSummary(error) });
+      throw error;
+    }
+  }
+
+  /** Binds an audit writer to this request's account, profile, request ID and boost. */
+  private auditor(auth: AuthContext, requestId: string | undefined, boostId: string | null) {
+    return (event: Omit<AuditEvent, 'requestId' | 'accountId' | 'profileId' | 'boostId'>): void => {
+      this.deps.audit.record({
+        ...event,
+        requestId: requestId ?? null,
+        accountId: auth.account.id,
+        profileId: auth.profile.id,
+        boostId,
+      });
+    };
+  }
+
+  /** Every TikTok call goes to the audit log and the caller's optional hook. */
+  private tracer(
+    audit: ReturnType<BoostService['auditor']>,
+    onTikTokCall: ((record: TikTokCallRecord) => void) | undefined,
+  ): (record: TikTokCallRecord) => void {
+    return (record) => {
+      audit({ type: 'tiktok.call', data: { ...record } });
+      onTikTokCall?.(record);
+    };
+  }
+
+  private errorSummary(err: unknown): Record<string, unknown> {
+    if (err instanceof AppError) {
+      return { code: err.definition.code, details: err.details };
+    }
+    return { code: 612, details: err instanceof Error ? err.message : String(err) };
   }
 
   // ---- pre-flight helpers -------------------------------------------------------

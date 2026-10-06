@@ -2,10 +2,10 @@
   "name": "ayrshare-tiktok-boost",
   "version": "0.1.0",
   "private": true,
-  "description": "Ayrshare POST /api/ads/tiktok/boost \u2014 turn an existing TikTok post into a Spark Ad",
+  "description": "Ayrshare POST /api/ads/tiktok/boost — turn an existing TikTok post into a Spark Ad",
   "type": "module",
   "engines": {
-    "node": ">=20.19"
+    "node": ">=22.12"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -30,7 +30,7 @@
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^5.0.6",
-    "@types/node": "^20.19.43",
+    "@types/node": "^22.20.5",
     "@types/supertest": "^7.2.1",
     "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10.12.0",
